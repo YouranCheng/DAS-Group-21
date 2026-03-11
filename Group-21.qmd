@@ -1,0 +1,212 @@
+---
+title: "Group_21_Analysis"
+author: "group21"
+format: html
+editor: visual
+#| warning:false
+---
+
+## Introduction
+
+Spam emails are a common problem in email communication and can affect both productivity and security. In this project, we use a spam email dataset to explore which text features are associated with an email being classified as spam. To do this, we fit a binomial logistic regression model and evaluate how well these variables help distinguish spam from non-spam emails.
+
+## Data preprocessing
+
+```{r}
+#| warning:false
+library(tidyverse)
+df <- read.csv("dataset21.csv")
+glimpse(df)
+any(is.na(df))
+```
+
+There are no missing values in the entire dataset.
+
+## Exploratory analysis
+
+```{r}
+ggplot(df, aes(x = crl.tot)) +
+  geom_histogram(
+    bins = 30,
+    fill = "#0B3C5D",
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of crl.tot",
+    x = "crl.tot",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+```
+
+The variable `crl.tot` was strongly right-skewed, so we used `log(1 + crl.tot)` to reduce skewness and improve the fit of the GLM.
+
+```{r}
+df <- df %>%
+  mutate(
+    yesno = factor(yesno, levels = c("n", "y")),
+    spam_num = ifelse(yesno == "y", 1, 0),
+    log_crl_tot = log1p(crl.tot)
+  )
+table(df$yesno)
+prop.table(table(df$yesno))
+
+```
+
+Before modelling, we prepared the dataset by converting the response variable `yesno` to a factor and creating a log-transformed version of `crl.tot` to reduce right skewness. We also inspected the class balance between spam and non-spam emails.
+
+The dataset contains 557 non-spam emails (60.5%) and 363 spam emails (39.5%).
+
+```{r}
+ggplot(df, aes(x = log_crl_tot)) +
+  geom_histogram(
+    bins = 30,
+    fill = "#0B3C5D",
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of log(1 + crl.tot)",
+    x = "log(1 + crl.tot)",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+```
+
+We drew a histogram for the new dataset and found that the processed data conformed to a normal distribution, making it more suitable for modeling.
+
+```{r}
+
+num_vars <- c("crl.tot", "dollar", "bang", "money", "n000", "make")
+
+for (v in num_vars) {
+  print(
+    ggplot(df, aes_string(x = v)) +
+      geom_histogram(
+        bins = 30,
+        fill = "#0B3C5D",
+        color = "white"
+      ) +
+      labs(
+        title = paste("Histogram of", v),
+        x = v,
+        y = "Frequency"
+      ) +
+      theme_minimal()
+  )
+}
+```
+
+Most predictors are right-skewed, which is expected for word- and symbol-frequency variables. Among them, `crl.tot` shows particularly strong skewness, so we use its log-transformed version in the GLM.
+
+```{r}
+
+for (v in num_vars) {
+  print(
+    ggplot(df, aes_string(x = "yesno", y = v, fill = "yesno")) +
+      geom_boxplot(show.legend = FALSE) +
+      labs(
+        title = paste("Boxplot of", v, "by Email Class"),
+        x = "Email Class",
+        y = v
+      ) +
+      theme_minimal()
+  )
+}
+ggplot(df, aes(x = yesno, y = log_crl_tot, fill = yesno)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(
+    title = "Boxplot of log(1 + crl.tot) by Email Class",
+    x = "Email Class",
+    y = "log(1 + crl.tot)"
+  ) +
+  theme_minimal()
+```
+
+These box plots illustrate that the above-mentioned variables occur more frequently in spam emails than in normal emails.We did not remove the outliers, because they are likely to be genuine features of spam emails rather than errors in the data.
+
+```{r}
+
+glimpse(df)
+summary(df)
+```
+
+## Modelling
+
+We fitted a generalized linear model (GLM) with a binomial family and logit link, that is, a logistic regression model. This model is appropriate because the response variable `yesno` is binary, indicating whether an email is spam or not spam. The model estimates how the predictor variables affect the probability that an email is classified as spam.
+
+$$
+\log \left( \frac{P(\text{spam})}{1 - P(\text{spam})} \right)
+= \beta_0 + \beta_1 \,\text{log\_crl\_tot} + \beta_2 \,\text{dollar} + \beta_3 \,\text{bang} + \beta_4 \,\text{money} + \beta_5 \,\text{n000} + \beta_6 \,\text{make}.
+$$
+
+```{r}
+
+mod1 <- glm(
+  yesno ~ log_crl_tot + dollar + bang + money + n000 + make,
+  data = df,
+  family = binomial
+)
+summary(mod1)
+library(broom)
+tidy(mod1, conf.int = TRUE, exponentiate = TRUE)
+```
+
+The GLM results show that `log_crl_tot`, `dollar`, `bang`, `money`, and `n000` are all significant positive predictors of spam, meaning that higher values of these variables are associated with a higher probability that an email is classified as spam. In contrast, `make` is not statistically significant, suggesting that it does not provide additional predictive value once the other variables are included in the model. Overall, the model indicates that features such as capital-letter runs, dollar signs, exclamation marks, the word “money”, and the string “000” are important indicators of spam.
+
+```{r}
+
+df$pred_prob <- predict(mod1, type = "response")
+df$pred_class <- ifelse(df$pred_prob > 0.5, "y", "n")
+df$pred_class <- factor(df$pred_class, levels = c("n", "y"))
+head(df[, c("yesno", "pred_prob", "pred_class")])
+table(df$pred_class)
+table(Predicted = df$pred_class, Actual = df$yesno)
+library(caret)
+confusionMatrix(df$pred_class, df$yesno, positive = "y")
+```
+
+The GLM achieved an accuracy of 85.11%, which is substantially higher than the no-information rate of 60.54%. The model has high specificity (94.61%), meaning it is very good at identifying non-spam emails, and moderate-to-strong sensitivity (70.52%), meaning it also detects most spam emails. Overall, the model performs well, although some spam emails are still missed.
+
+```{r}
+
+library(pROC)
+roc_obj <- roc(response = df$yesno, predictor = df$pred_prob, levels = c("n", "y"))
+plot(roc_obj, main = "ROC Curve for GLM")
+auc(roc_obj)
+```
+
+The ROC curve lies well above the diagonal reference line, indicating that the GLM has good discriminatory ability in distinguishing spam from non-spam emails. This suggests that the model performs substantially better than random classification and provides strong overall predictive performance.
+
+## Reduced Model
+
+Since `make` was not statistically significant in the full model, we fitted a reduced model excluding `make` and compared the two models. If the reduced model shows similar or better fit, it would be preferred for parsimony.
+
+```{r}
+
+mod2 <- glm(
+  yesno ~ log_crl_tot + dollar + bang + money + n000,
+  data = df,
+  family = binomial
+)
+
+summary(mod2)
+AIC(mod1, mod2)
+anova(mod1, mod2, test = "Chisq")
+```
+
+```{r}
+
+df$pred_prob2 <- predict(mod2, type = "response")
+df$pred_class2 <- ifelse(df$pred_prob2 > 0.5, "y", "n")
+df$pred_class2 <- factor(df$pred_class2, levels = c("n", "y"))
+
+library(caret)
+confusionMatrix(df$pred_class2, df$yesno, positive = "y")
+```
+
+The reduced model has a slightly lower AIC than the full model, suggesting a marginally better fit with fewer predictors. Its classification performance remains almost unchanged, with an accuracy of 85.0%, indicating that removing `make` does not meaningfully reduce predictive performance. Therefore, the reduced model may be preferred for parsimony.
+
+## Conclusion
+
+In this project, we first prepared the data by converting `yesno` into a factor and creating a log-transformed version of `crl.tot`. From the exploratory data analysis, we found that most variables were right-skewed, especially `crl.tot`, so using `log(1 + crl.tot)` was appropriate. We then fitted a binomial logistic regression model and found that `log_crl_tot`, `dollar`, `bang`, `money`, and `n000` were important positive predictors of spam, while `make` was not significant. After removing `make`, the reduced model still performed well, with an accuracy of about 85%. Overall, this suggests that emails containing more capital-letter runs, dollar signs, exclamation marks, the word “money”, and the string “000” are more likely to be classified as spam.
