@@ -1,11 +1,9 @@
 ---
 title: "Group_21_Analysis"
 author: "group21"
-format:
-  pdf:
-    geometry: margin=1in
-    fontsize: 11pt
+format: html
 editor: visual
+#| warning:false
 ---
 
 ## Introduction
@@ -16,93 +14,29 @@ Spam emails are a common problem in email communication and can affect both prod
 
 ```{r}
 #| label: setup
-#| include: false
 #| warning: false
 #| message: false
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
-# Hide warnings and package messages in the final output
-knitr::opts_chunk$set(
-  warning = FALSE,
-  message = FALSE
-)
-
-# Load packages used in the analysis
 library(tidyverse)
 library(broom)
 library(caret)
 library(pROC)
-library(car)
-library(knitr)
 
-# Set seed so the train/test split can be reproduced
-set.seed(21)
-
-# Colours used in plots
-accent_col <- "#0B3C5D"
-highlight_col <- "#E76F51"
-
-# Try to find the folder where the qmd file is located
-# If that does not work, use the current working directory
 project_dir <- tryCatch({
-  in_dir <- knitr::current_input(dir = TRUE)
-  if (nzchar(in_dir)) in_dir else getwd()
+  input_dir <- knitr::current_input(dir = TRUE)
+  if (nzchar(input_dir)) input_dir else getwd()
 }, error = function(e) {
   getwd()
 })
 
-# Build the path to the data file
 data_path <- file.path(project_dir, "dataset21.csv")
-
-# Fallback option if the file is already in the working directory
 if (!file.exists(data_path)) {
   data_path <- "dataset21.csv"
 }
 
-# Read the dataset
 df <- read.csv(data_path)
-
-# Simple helper to turn model output into a clean table
-coef_table_fn <- function(model) {
-  tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
-    filter(term != "(Intercept)") %>%
-    mutate(
-      term = str_replace_all(term, "_", " "),
-      estimate = round(estimate, 3),
-      conf.low = round(conf.low, 3),
-      conf.high = round(conf.high, 3),
-      p.value = signif(p.value, 3)
-    ) %>%
-    transmute(
-      Predictor = term,
-      `Odds ratio` = estimate,
-      `95% CI` = paste0(conf.low, " to ", conf.high),
-      `p-value` = p.value
-    )
-}
-
-# Simple helper to collect the main model performance measures
-perf_table_fn <- function(actual, pred_prob) {
-  pred_class <- factor(ifelse(pred_prob > 0.5, "y", "n"), levels = c("n", "y"))
-  cm <- confusionMatrix(pred_class, actual, positive = "y")
-  roc_obj <- roc(actual, pred_prob, levels = c("n", "y"), quiet = TRUE)
-
-  tibble(
-    Accuracy = as.numeric(cm$overall["Accuracy"]),
-    Sensitivity = as.numeric(cm$byClass["Sensitivity"]),
-    Specificity = as.numeric(cm$byClass["Specificity"]),
-    AUC = as.numeric(auc(roc_obj))
-  ) %>%
-    mutate(across(everything(), \(x) round(x, 4)))
-}
-```
-
-```{r}
-#| label: check-data
-
-# Look at the structure of the data
 glimpse(df)
-
-# Check if there are any missing values
 any(is.na(df))
 ```
 
@@ -129,28 +63,14 @@ ggplot(df, aes(x = crl.tot)) +
 The variable `crl.tot` was strongly right-skewed, so we used `log(1 + crl.tot)` to reduce skewness and improve the fit of the GLM.
 
 ```{r}
-
-#| label: prepare-data
-#| include: false
-
-# Make sure the response variable is treated as a factor
-# n = non-spam, y = spam
 df <- df %>%
   mutate(
-    yesno = factor(yesno, levels = c("n", "y"))
+    yesno = factor(yesno, levels = c("n", "y")),
+    spam_num = ifelse(yesno == "y", 1, 0),
+    log_crl_tot = log1p(crl.tot)
   )
-
-# Create log-transformed versions of skewed predictors
-# log1p(x) means log(1 + x)
-df <- df %>%
-  mutate(
-    log_crl_tot = log1p(crl.tot),
-    log_dollar  = log1p(dollar),
-    log_bang    = log1p(bang),
-    log_money   = log1p(money),
-    log_n000    = log1p(n000),
-    log_make    = log1p(make)
-  )
+table(df$yesno)
+prop.table(table(df$yesno))
 
 ```
 
@@ -173,7 +93,7 @@ ggplot(df, aes(x = log_crl_tot)) +
   theme_minimal()
 ```
 
-We drew a histogram for the transformed variable and found that it is much less skewed, making it more suitable for modeling.
+We drew a histogram for the new dataset and found that the processed data conformed to a normal distribution, making it more suitable for modeling.
 
 ```{r}
 
@@ -197,7 +117,7 @@ for (v in num_vars) {
 }
 ```
 
-Most predictors are right-skewed, which is expected for word- and symbol-frequency variables. Among them, `crl.tot` shows particularly strong skewness, but the same pattern is also visible for several other predictors.
+Most predictors are right-skewed, which is expected for word- and symbol-frequency variables. Among them, `crl.tot` shows particularly strong skewness, so we use its log-transformed version in the GLM.
 
 ```{r}
 
@@ -223,29 +143,12 @@ ggplot(df, aes(x = yesno, y = log_crl_tot, fill = yesno)) +
   theme_minimal()
 ```
 
-These box plots illustrate that the above-mentioned variables occur more frequently in spam emails than in normal emails. We did not remove the outliers, because they are likely to be genuine features of spam emails rather than errors in the data.
+These box plots illustrate that the above-mentioned variables occur more frequently in spam emails than in normal emails.We did not remove the outliers, because they are likely to be genuine features of spam emails rather than errors in the data.
 
 ```{r}
-# Summary table for the dataset
-data_summary <- tibble(
-  Metric = c("Rows", "Columns", "Missing values", "Non-spam emails", "Spam emails"),
-  Value = c(nrow(df), ncol(df), sum(is.na(df)), sum(df$yesno == "n"), sum(df$yesno == "y"))
-)
 
-variable_summary <- df %>%
-  select(crl.tot, dollar, bang, money, n000, make) %>%
-  pivot_longer(everything(), names_to = "Variable", values_to = "Value") %>%
-  group_by(Variable) %>%
-  summarise(
-    Mean = round(mean(Value), 3),
-    Median = round(median(Value), 3),
-    `Std. Dev.` = round(sd(Value), 3),
-    Max = round(max(Value), 3),
-    .groups = "drop"
-  )
-
-knitr::kable(data_summary, caption = "Basic dataset summary")
-knitr::kable(variable_summary, caption = "Summary of numeric predictors")
+glimpse(df)
+summary(df)
 ```
 
 ## Modelling
@@ -258,48 +161,36 @@ $$
 $$
 
 ```{r}
-# Fit the full logistic regression model
+
 mod1 <- glm(
   yesno ~ log_crl_tot + dollar + bang + money + n000 + make,
   data = df,
   family = binomial
 )
-
-mod1_coef_table <- coef_table_fn(mod1)
-knitr::kable(mod1_coef_table, caption = "Coefficient summary for the full model")
+summary(mod1)
+tidy(mod1, conf.int = TRUE, exponentiate = TRUE)
 ```
 
 The GLM results show that `log_crl_tot`, `dollar`, `bang`, `money`, and `n000` are all significant positive predictors of spam, meaning that higher values of these variables are associated with a higher probability that an email is classified as spam. In contrast, `make` is not statistically significant, suggesting that it does not provide additional predictive value once the other variables are included in the model. Overall, the model indicates that features such as capital-letter runs, dollar signs, exclamation marks, the word “money”, and the string “000” are important indicators of spam.
 
 ```{r}
-# Get fitted probabilities and summarise model performance
+
 df$pred_prob <- predict(mod1, type = "response")
-mod1_perf_table <- perf_table_fn(df$yesno, df$pred_prob)
-knitr::kable(mod1_perf_table, caption = "In-sample performance of the full model")
+df$pred_class <- ifelse(df$pred_prob > 0.5, "y", "n")
+df$pred_class <- factor(df$pred_class, levels = c("n", "y"))
+head(df[, c("yesno", "pred_prob", "pred_class")])
+table(df$pred_class)
+table(Predicted = df$pred_class, Actual = df$yesno)
+confusionMatrix(df$pred_class, df$yesno, positive = "y")
 ```
 
-The GLM achieved an in-sample accuracy of 85.11%, which is substantially higher than the no-information rate of 60.54%. The model has high specificity (94.61%), meaning it is very good at identifying non-spam emails, and moderate-to-strong sensitivity (70.52%), meaning it also detects most spam emails. Overall, the model performs well, although some spam emails are still missed. However, because this accuracy is calculated on the same data used to fit the model, it is likely to be somewhat optimistic.
+The GLM achieved an accuracy of 85.11%, which is substantially higher than the no-information rate of 60.54%. The model has high specificity (94.61%), meaning it is very good at identifying non-spam emails, and moderate-to-strong sensitivity (70.52%), meaning it also detects most spam emails. Overall, the model performs well, although some spam emails are still missed.
 
 ```{r}
-# Plot the ROC curve for the full model
+
 roc_obj <- roc(response = df$yesno, predictor = df$pred_prob, levels = c("n", "y"))
-ggroc(roc_obj, linewidth = 1.2, color = accent_col) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray60") +
-  annotate(
-    "label",
-    x = 0.72,
-    y = 0.16,
-    label = paste0("AUC = ", round(as.numeric(auc(roc_obj)), 3)),
-    fill = "white",
-    color = accent_col,
-    linewidth = 0.25
-  ) +
-  labs(
-    title = "ROC Curve for the Full Model",
-    x = "1 - Specificity",
-    y = "Sensitivity"
-  ) +
-  theme_minimal()
+plot(roc_obj, main = "ROC Curve for GLM")
+auc(roc_obj)
 ```
 
 The ROC curve lies well above the diagonal reference line, indicating that the GLM has good discriminatory ability in distinguishing spam from non-spam emails. This suggests that the model performs substantially better than random classification and provides strong overall predictive performance.
@@ -309,216 +200,29 @@ The ROC curve lies well above the diagonal reference line, indicating that the G
 Since `make` was not statistically significant in the full model, we fitted a reduced model excluding `make` and compared the two models. If the reduced model shows similar or better fit, it would be preferred for parsimony.
 
 ```{r}
-# Fit the reduced model without `make`
+
 mod2 <- glm(
   yesno ~ log_crl_tot + dollar + bang + money + n000,
   data = df,
   family = binomial
 )
 
+summary(mod2)
+AIC(mod1, mod2)
+anova(mod1, mod2, test = "Chisq")
+```
+
+```{r}
+
 df$pred_prob2 <- predict(mod2, type = "response")
+df$pred_class2 <- ifelse(df$pred_prob2 > 0.5, "y", "n")
+df$pred_class2 <- factor(df$pred_class2, levels = c("n", "y"))
 
-model_compare_table <- bind_rows(
-  perf_table_fn(df$yesno, df$pred_prob) %>% mutate(Model = "Full model", AIC = round(AIC(mod1), 4)),
-  perf_table_fn(df$yesno, df$pred_prob2) %>% mutate(Model = "Reduced model", AIC = round(AIC(mod2), 4))
-) %>%
-  select(Model, AIC, Accuracy, Sensitivity, Specificity, AUC)
-
-lrt_result <- anova(mod1, mod2, test = "Chisq")
-lrt_table <- tibble(
-  Comparison = "Full vs Reduced",
-  `Deviance difference` = round(abs(lrt_result$Deviance[2]), 4),
-  `p-value` = signif(lrt_result$`Pr(>Chi)`[2], 3)
-)
-
-knitr::kable(coef_table_fn(mod2), caption = "Coefficient summary for the reduced model")
-knitr::kable(model_compare_table, caption = "Comparison of the full and reduced models")
-knitr::kable(lrt_table, caption = "Nested model test")
-
-model_compare_plot <- model_compare_table %>%
-  select(Model, Accuracy, Sensitivity, Specificity, AUC) %>%
-  pivot_longer(
-    -Model,
-    names_to = "Metric",
-    values_to = "Value"
-  )
-
-ggplot(model_compare_plot, aes(x = Model, y = Value, fill = Metric)) +
-  geom_col(position = position_dodge(width = 0.72), width = 0.65) +
-  scale_fill_manual(
-    values = c(
-      Accuracy = accent_col,
-      Sensitivity = "#2A9D8F",
-      Specificity = "#E9C46A",
-      AUC = highlight_col
-    )
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(
-    title = "Performance Comparison: Full vs Reduced Model",
-    x = NULL,
-    y = "Score",
-    fill = NULL
-  ) +
-  theme_minimal() +
-  theme(legend.position = "top")
+confusionMatrix(df$pred_class2, df$yesno, positive = "y")
 ```
 
 The reduced model has a slightly lower AIC than the full model, suggesting a marginally better fit with fewer predictors. Its classification performance remains almost unchanged, with an accuracy of 85.0%, indicating that removing `make` does not meaningfully reduce predictive performance. Therefore, the reduced model may be preferred for parsimony.
 
-## Model limitations and improvement
-
-Although the original and reduced models are useful, they still have two main limitations. First, only `crl.tot` was transformed, even though the other frequency variables are also strongly right-skewed. Second, model performance was assessed on the same data used for fitting, which tends to overestimate predictive accuracy. To improve the model without changing the overall structure of the report too much, we fit one additional logistic regression using transformed predictors and evaluate it on a held-out test set.
-
-The final improved model is:
-
-$$
-\log \left( \frac{P(\text{spam})}{1 - P(\text{spam})} \right)
-= \beta_0 + \beta_1 \,\text{log\_crl\_tot} + \beta_2 \,\text{log\_dollar}
-+ \beta_3 \,\text{log\_bang} + \beta_4 \,\text{log\_money}
-+ \beta_5 \,\text{log\_n000}.
-$$
-
-```{r}
-# Split the data into training and test sets
-train_index <- createDataPartition(df$yesno, p = 0.80, list = FALSE)
-train_df <- df[train_index, ]
-test_df <- df[-train_index, ]
-
-# Fit the improved model using transformed predictors
-mod3 <- glm(
-  yesno ~ log_crl_tot + log_dollar + log_bang + log_money + log_n000,
-  data = train_df,
-  family = binomial
-)
-
-knitr::kable(coef_table_fn(mod3), caption = "Coefficient summary for the improved model")
-
-coef_plot_df <- tidy(mod3, conf.int = TRUE, exponentiate = TRUE) %>%
-  filter(term != "(Intercept)") %>%
-  mutate(
-    term = factor(
-      term,
-      levels = c("log_crl_tot", "log_dollar", "log_bang", "log_money", "log_n000"),
-      labels = c("log crl tot", "log dollar", "log bang", "log money", "log n000")
-    )
-  )
-
-ggplot(coef_plot_df, aes(x = estimate, y = forcats::fct_rev(term))) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "gray60") +
-  geom_errorbar(
-    aes(xmin = conf.low, xmax = conf.high),
-    width = 0.18,
-    color = accent_col
-  ) +
-  geom_point(size = 3, color = highlight_col) +
-  scale_x_log10() +
-  labs(
-    title = "Odds Ratios for the Improved Model",
-    x = "Odds ratio (log scale)",
-    y = NULL
-  ) +
-  theme_minimal()
-```
-
-This improved model keeps the same logistic regression framework, but uses transformed versions of the main skewed predictors throughout and excludes `make`, which was not useful in the earlier models.
-
-```{r}
-# Evaluate the improved model on the test set
-test_prob <- predict(mod3, newdata = test_df, type = "response")
-test_class <- factor(ifelse(test_prob > 0.5, "y", "n"), levels = c("n", "y"))
-test_cm <- confusionMatrix(test_class, test_df$yesno, positive = "y")
-test_auc <- auc(roc(test_df$yesno, test_prob, levels = c("n", "y"), quiet = TRUE))
-
-performance_table <- tibble(
-  Metric = c("Accuracy", "Sensitivity", "Specificity", "AUC"),
-  Value = round(
-    c(
-      as.numeric(test_cm$overall["Accuracy"]),
-      as.numeric(test_cm$byClass["Sensitivity"]),
-      as.numeric(test_cm$byClass["Specificity"]),
-      as.numeric(test_auc)
-    ),
-    4
-  )
-)
-
-knitr::kable(
-  performance_table,
-  caption = "Performance of the improved model on the test set"
-)
-
-improvement_compare_table <- bind_rows(
-  perf_table_fn(df$yesno, df$pred_prob) %>%
-    mutate(Model = "Original full model", Evaluation = "In-sample", AIC = round(AIC(mod1), 4)),
-  perf_table_fn(df$yesno, df$pred_prob2) %>%
-    mutate(Model = "Original reduced model", Evaluation = "In-sample", AIC = round(AIC(mod2), 4)),
-  perf_table_fn(test_df$yesno, test_prob) %>%
-    mutate(Model = "Improved test-set model", Evaluation = "Test set", AIC = round(AIC(mod3), 4))
-) %>%
-  select(Model, Evaluation, AIC, Accuracy, Sensitivity, Specificity, AUC)
-
-knitr::kable(
-  improvement_compare_table,
-  caption = "Combined performance summary across models"
-)
-
-improvement_compare_plot <- improvement_compare_table %>%
-  pivot_longer(
-    c(Accuracy, Sensitivity, Specificity, AUC),
-    names_to = "Metric",
-    values_to = "Value"
-  )
-
-ggplot(improvement_compare_plot, aes(x = Model, y = Value, fill = Metric)) +
-  geom_col(position = position_dodge(width = 0.72), width = 0.65) +
-  scale_fill_manual(
-    values = c(
-      Accuracy = accent_col,
-      Sensitivity = "#2A9D8F",
-      Specificity = "#E9C46A",
-      AUC = highlight_col
-    )
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(
-    title = "Combined Performance Across the Three Models",
-    x = NULL,
-    y = "Score",
-    fill = NULL
-  ) +
-  theme_minimal() +
-  theme(legend.position = "top")
-```
-
-On the held-out test set, the improved model achieves an accuracy of about 82.0%, with sensitivity of about 70.8%, specificity of about 89.2%, and an AUC of about 0.888. These values are slightly lower than the earlier in-sample results, but they provide a more realistic measure of how the model would perform on new emails.
-
-```{r}
-# Plot the ROC curve for the improved model
-roc_obj2 <- roc(response = test_df$yesno, predictor = test_prob, levels = c("n", "y"))
-ggroc(roc_obj2, linewidth = 1.2, color = highlight_col) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray60") +
-  annotate(
-    "label",
-    x = 0.72,
-    y = 0.16,
-    label = paste0("AUC = ", round(as.numeric(auc(roc_obj2)), 3)),
-    fill = "white",
-    color = highlight_col,
-    linewidth = 0.25
-  ) +
-  labs(
-    title = "ROC Curve for the Improved Model on the Test Set",
-    x = "1 - Specificity",
-    y = "Sensitivity"
-  ) +
-  theme_minimal()
-```
-
-The test-set ROC curve remains well above the diagonal line, showing that the improved model still has strong discriminatory ability even under more realistic evaluation.
-
 ## Conclusion
 
-In this project, we first prepared the data by converting `yesno` into a factor and creating a log-transformed version of `crl.tot`. From the exploratory data analysis, we found that most variables were right-skewed, especially `crl.tot`, so transforming skewed predictors was appropriate. We then fitted a binomial logistic regression model and found that `log_crl_tot`, `dollar`, `bang`, `money`, and `n000` were important positive predictors of spam, while `make` was not significant. After removing `make`, the reduced model still performed well.
-
-To make the analysis more reliable, we also fitted an improved logistic regression using transformed versions of the main skewed predictors and evaluated it on a held-out test set. This gave a more realistic accuracy of about 82%, while still showing strong classification performance. Overall, the results suggest that emails containing more capital-letter runs, dollar signs, exclamation marks, the word “money”, and the string “000” are more likely to be classified as spam.
+In this project, we first prepared the data by converting `yesno` into a factor and creating a log-transformed version of `crl.tot`. From the exploratory data analysis, we found that most variables were right-skewed, especially `crl.tot`, so using `log(1 + crl.tot)` was appropriate. We then fitted a binomial logistic regression model and found that `log_crl_tot`, `dollar`, `bang`, `money`, and `n000` were important positive predictors of spam, while `make` was not significant. After removing `make`, the reduced model still performed well, with an accuracy of about 85%. Overall, this suggests that emails containing more capital-letter runs, dollar signs, exclamation marks, the word “money”, and the string “000” are more likely to be classified as spam.
