@@ -9,7 +9,7 @@ The report studies which email text features are associated with spam classifica
 ## Repository Structure
 
 - `Group-21.qmd`: Quarto source file for the analysis report.
-- `Group-21.html`: rendered HTML output of the report.
+- `Group-21.pdf`: rendered pdf output of the report.
 - `dataset21.csv`: dataset used in the analysis.
 - `README.md`: project summary and reproduction guide.
 
