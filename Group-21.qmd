@@ -13,9 +13,29 @@ Spam emails are a common problem in email communication and can affect both prod
 ## Data preprocessing
 
 ```{r}
-#| warning:false
+#| label: setup
+#| warning: false
+#| message: false
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
 library(tidyverse)
-df <- read.csv("dataset21.csv")
+library(broom)
+library(caret)
+library(pROC)
+
+project_dir <- tryCatch({
+  input_dir <- knitr::current_input(dir = TRUE)
+  if (nzchar(input_dir)) input_dir else getwd()
+}, error = function(e) {
+  getwd()
+})
+
+data_path <- file.path(project_dir, "dataset21.csv")
+if (!file.exists(data_path)) {
+  data_path <- "dataset21.csv"
+}
+
+df <- read.csv(data_path)
 glimpse(df)
 any(is.na(df))
 ```
@@ -81,7 +101,7 @@ num_vars <- c("crl.tot", "dollar", "bang", "money", "n000", "make")
 
 for (v in num_vars) {
   print(
-    ggplot(df, aes_string(x = v)) +
+    ggplot(df, aes(x = .data[[v]])) +
       geom_histogram(
         bins = 30,
         fill = "#0B3C5D",
@@ -103,7 +123,7 @@ Most predictors are right-skewed, which is expected for word- and symbol-frequen
 
 for (v in num_vars) {
   print(
-    ggplot(df, aes_string(x = "yesno", y = v, fill = "yesno")) +
+    ggplot(df, aes(x = yesno, y = .data[[v]], fill = yesno)) +
       geom_boxplot(show.legend = FALSE) +
       labs(
         title = paste("Boxplot of", v, "by Email Class"),
@@ -148,7 +168,6 @@ mod1 <- glm(
   family = binomial
 )
 summary(mod1)
-library(broom)
 tidy(mod1, conf.int = TRUE, exponentiate = TRUE)
 ```
 
@@ -162,7 +181,6 @@ df$pred_class <- factor(df$pred_class, levels = c("n", "y"))
 head(df[, c("yesno", "pred_prob", "pred_class")])
 table(df$pred_class)
 table(Predicted = df$pred_class, Actual = df$yesno)
-library(caret)
 confusionMatrix(df$pred_class, df$yesno, positive = "y")
 ```
 
@@ -170,7 +188,6 @@ The GLM achieved an accuracy of 85.11%, which is substantially higher than the n
 
 ```{r}
 
-library(pROC)
 roc_obj <- roc(response = df$yesno, predictor = df$pred_prob, levels = c("n", "y"))
 plot(roc_obj, main = "ROC Curve for GLM")
 auc(roc_obj)
@@ -201,7 +218,6 @@ df$pred_prob2 <- predict(mod2, type = "response")
 df$pred_class2 <- ifelse(df$pred_prob2 > 0.5, "y", "n")
 df$pred_class2 <- factor(df$pred_class2, levels = c("n", "y"))
 
-library(caret)
 confusionMatrix(df$pred_class2, df$yesno, positive = "y")
 ```
 
